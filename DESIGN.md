@@ -296,6 +296,10 @@ course-library/
 确认应用外壳从 Service Worker 缓存里起得来、课程和文件列表照常渲染。
 上面第 5 条 bug 就是被这一项抓出来的——在那之前，所有测试全绿，而「离线可用」其实从未生效。
 
+同一套断言也能直接打线上站点（`BASE_URL=https://fcyzjbn.github.io/course-library/ node scripts/smoke.mjs`），
+部署后实测 **30 通过 / 0 失败**。确认线上可用的方式是「跑一遍真实链路」，
+而不是「curl 一下 index.html 返回 200」——后者只能说明文件传上去了。
+
 测试用的 8 个假文件由 `scripts/make-fixtures.mjs` 现场生成，**是真实格式**：
 docx/pptx/xlsx 是手写 ZIP 打包的真实 OOXML（不引第三方库，Node 自带能力足够），
 PDF 也是按 xref 表算好偏移量拼出来的合法文件。

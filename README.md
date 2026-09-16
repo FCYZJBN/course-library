@@ -189,7 +189,15 @@ node scripts/smoke.mjs             # 端到端冒烟测试（无头 Chrome 跑�
 
 `smoke.mjs` 会自己起服务器和无头 Chrome，用 CDP 驱动真实浏览器走完
 建学期 → 建课程 → 导入 → 归类 → 入库 → 提取 → 搜索 → 导出的全流程，
-并断言全程零未捕获异常。它需要本机装有 Chrome，也可以用 `CHROME_PATH` 指定。
+最后断开网络重载一次确认离线可用，并断言全程零未捕获异常。
+它需要本机装有 Chrome，也可以用 `CHROME_PATH` 指定。
+
+加 `BASE_URL` 可以让同一套断言直接打线上站点——部署完最该确认的是「线上真的能跑」，
+而不是「文件能下载」：
+
+```bash
+BASE_URL=https://fcyzjbn.github.io/course-library/ node scripts/smoke.mjs
+```
 
 ### 重新生成图标
 

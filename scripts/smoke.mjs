@@ -14,6 +14,11 @@ import { Cdp, ROOT, sleep, startServer, startChrome } from './cdp.mjs';
 const PORT = 8010;
 const DEBUG_PORT = 9411;
 
+// 默认打本地；传 BASE_URL=https://fcyzjbn.github.io/course-library/ 就能让同一套
+// 断言直接跑线上站点——部署完最该确认的就是「线上真的能跑」，而不是「文件能下载」。
+const BASE_URL = process.env.BASE_URL || null;
+const ORIGIN = BASE_URL || `http://127.0.0.1:${PORT}/`;
+
 // ============================ 断言 ============================
 
 let pass = 0;
@@ -55,13 +60,13 @@ async function main() {
     process.exit(1);
   }
 
-  // —— 本地服务器 ——
-  const server = startServer(PORT);
+  // —— 本地服务器（打线上时不需要）——
+  const server = BASE_URL ? null : startServer(PORT);
   await sleep(800);
 
   const cleanup = () => {
     chrome.dispose();
-    try { server.kill(); } catch {}
+    try { server?.kill(); } catch {}
   };
   process.on('exit', cleanup);
 
@@ -80,8 +85,8 @@ async function main() {
     const waitFor = (expr, label, timeout) => cdp.waitFor(expr, label, timeout);
 
     // ============ 1. 启动与空状态 ============
-    console.log('\n[1] 启动与空状态');
-    await cdp.goto(`http://127.0.0.1:${PORT}/`);
+    console.log(`\n[1] 启动与空状态  （${ORIGIN}）`);
+    await cdp.goto(ORIGIN);
     await waitFor(`document.querySelector('#view')?.innerHTML.length`, '应用启动');
 
     checkEq(await js(`!!document.querySelector('#guide-new-sem')`), true, '空库时展示三步引导');
