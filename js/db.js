@@ -66,6 +66,22 @@ function txDone(tx) {
   });
 }
 
+// 把一组读写操作放进事务里跑。
+// 为什么不直接把 store.put 一排写完：如果中间有一条同步抛出（比如值没法结构化
+// 克隆，抛 DataCloneError），异常会直接穿过调用者，而事务还活着——它会在空闲时
+// 自动提交，于是前面几条生效了、后面几条没生效。调用方以为整批失败，
+// 实际上库被改了一半。删除同理，删一半比不删更糟。
+// 所以这里显式 abort：要么整批成功，要么一条都不留。
+function runInTx(tx, fn) {
+  try {
+    fn();
+  } catch (err) {
+    try { tx.abort(); } catch {}
+    throw err;
+  }
+  return txDone(tx);
+}
+
 export async function getAll(storeName) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readonly');
@@ -87,8 +103,7 @@ export async function getByIndex(storeName, indexName, key) {
 export async function put(storeName, value) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readwrite');
-  tx.objectStore(storeName).put(value);
-  await txDone(tx);
+  return runInTx(tx, () => tx.objectStore(storeName).put(value));
 }
 
 export async function putMany(storeName, values) {
@@ -96,15 +111,13 @@ export async function putMany(storeName, values) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readwrite');
   const store = tx.objectStore(storeName);
-  values.forEach((v) => store.put(v));
-  await txDone(tx);
+  return runInTx(tx, () => values.forEach((v) => store.put(v)));
 }
 
 export async function remove(storeName, key) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readwrite');
-  tx.objectStore(storeName).delete(key);
-  await txDone(tx);
+  return runInTx(tx, () => tx.objectStore(storeName).delete(key));
 }
 
 export async function removeMany(storeName, keys) {
@@ -112,15 +125,13 @@ export async function removeMany(storeName, keys) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readwrite');
   const store = tx.objectStore(storeName);
-  keys.forEach((k) => store.delete(k));
-  await txDone(tx);
+  return runInTx(tx, () => keys.forEach((k) => store.delete(k)));
 }
 
 export async function clear(storeName) {
   const db = await openDB();
   const tx = db.transaction(storeName, 'readwrite');
-  tx.objectStore(storeName).clear();
-  await txDone(tx);
+  return runInTx(tx, () => tx.objectStore(storeName).clear());
 }
 
 // 一次事务里同时写多张表：导入文件时元数据、正文、本体必须一起落库
@@ -128,14 +139,15 @@ export async function putTx(entries) {
   const stores = Object.keys(entries);
   const db = await openDB();
   const tx = db.transaction(stores, 'readwrite');
-  stores.forEach((name) => {
-    const store = tx.objectStore(name);
-    const val = entries[name];
-    if (val == null) return;
-    if (Array.isArray(val)) val.forEach((v) => store.put(v));
-    else store.put(val);
+  return runInTx(tx, () => {
+    stores.forEach((name) => {
+      const store = tx.objectStore(name);
+      const val = entries[name];
+      if (val == null) return;
+      if (Array.isArray(val)) val.forEach((v) => store.put(v));
+      else store.put(val);
+    });
   });
-  await txDone(tx);
 }
 
 // 一次事务里跨表删除
@@ -143,13 +155,14 @@ export async function deleteTx(entries) {
   const stores = Object.keys(entries);
   const db = await openDB();
   const tx = db.transaction(stores, 'readwrite');
-  stores.forEach((name) => {
-    const store = tx.objectStore(name);
-    const keys = entries[name];
-    if (keys == null) return;
-    (Array.isArray(keys) ? keys : [keys]).forEach((k) => store.delete(k));
+  return runInTx(tx, () => {
+    stores.forEach((name) => {
+      const store = tx.objectStore(name);
+      const keys = entries[name];
+      if (keys == null) return;
+      (Array.isArray(keys) ? keys : [keys]).forEach((k) => store.delete(k));
+    });
   });
-  await txDone(tx);
 }
 
 // 用游标逐条扫描 texts，避免把整张表（可能几十 MB 正文）一次性读进内存

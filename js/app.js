@@ -4,7 +4,7 @@
 
 import {
   escapeHtml, uid, extOf, splitExt, formatBytes, formatDateTime,
-  relativeTime, naturalCompare, debounce, snippetAround,
+  relativeTime, naturalCompare, debounce, snippetAround, isQuotaError,
 } from './util.js';
 import * as db from './db.js';
 import { classifyBatch, classifyOne, recomputeVersions } from './classifier.js';
@@ -45,6 +45,26 @@ async function boot() {
   render();
   runExtractionQueue();
   registerServiceWorker();
+  requestPersistentStorage();
+}
+
+// 申请「持久化存储」。
+// 默认情况下浏览器把本站数据当缓存看，磁盘紧张时可以直接清掉——
+// 对记事本类应用这是灾难：用户什么都没做错，一学期的资料没了。
+// 拿到豁免之后只有用户手动清除才会删。
+//
+// 时机是刻意的：Firefox 会为此弹一个权限框，第一次打开就弹会吓到人。
+// 所以等到库里已经有东西了（说明是认真在用）再申请，那时候用户答得上「是」。
+// 没批准也不勉强，设置页里有按钮可以再试。
+async function requestPersistentStorage() {
+  if (!navigator.storage || !navigator.storage.persist) return;
+  try {
+    if (await navigator.storage.persisted()) return;
+    if (!state.files.length && !state.semesters.length) return;
+    await navigator.storage.persist();
+  } catch (err) {
+    console.warn('申请持久化存储失败（不影响使用）：', err);
+  }
 }
 
 // 注册 Service Worker，让应用离线可用。
@@ -152,7 +172,11 @@ function renderSidebar() {
       </button>`;
     }).join('');
     return `<div class="sem-block">
-      <div class="sem-name">${escapeHtml(s.name)}<span class="count">${list.length} 门</span></div>
+      <div class="sem-name">
+        <span class="sem-label">${escapeHtml(s.name)}</span>
+        <span class="count">${list.length} 门</span>
+        <button class="sem-del" data-del-sem="${s.id}" title="删除这个学期">✕</button>
+      </div>
       ${items || '<div class="side-empty" style="padding:4px 10px 8px">暂无课程</div>'}
     </div>`;
   }).join('');
@@ -188,6 +212,12 @@ function renderSidebar() {
     state.selection.clear();
     render();
   };
+  el.querySelectorAll('[data-del-sem]').forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      openDeleteSemester(b.dataset.delSem);
+    };
+  });
   el.querySelector('#side-new-course').onclick = () => openCourseDialog();
   el.querySelector('#side-new-sem').onclick = () => openSemesterDialog();
 }
@@ -579,6 +609,11 @@ function bindGlobal() {
     handleIncoming([...e.target.files]);
     e.target.value = '';
   };
+  $('#backup-input').onchange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 清空，否则同一个文件选第二次不触发 change
+    if (file) openConfirmRestore(file);
+  };
 
   bindDragDrop();
 }
@@ -708,6 +743,7 @@ function openImportPreview(rows) {
         </select>
         <select id="bulk-cat"><option value="">— 选分类 —</option></select>
         <button class="ghost-btn" id="apply-bulk">应用到全部</button>
+        <button class="ghost-btn" id="drop-dups" hidden></button>
         <span class="spacer" style="flex:1"></span>
         <span id="review-count" style="font-size:12.5px;color:var(--muted)"></span>
       </div>
@@ -724,11 +760,31 @@ function openImportPreview(rows) {
   const body = m.body.querySelector('#preview-body');
   const bulkCat = m.body.querySelector('#bulk-cat');
   const bulkCourse = m.body.querySelector('#bulk-course');
+  const dropDups = m.body.querySelector('#drop-dups');
 
   const fillCatOptions = (sel, courseId) => {
     const cats = courseId ? categoriesOf(courseId) : [];
     sel.innerHTML = '<option value="">— 选分类 —</option>' +
       cats.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  };
+
+  // 「同名同大小」当成可能重复。只比名字会误判——每学期都有一份「第1章.pptx」是常事；
+  // 只比大小更不靠谱。两个都一样才值得提一句。
+  // 提一句而已：默认还是照旧全部导入。自动跳过是更坏的选择——
+  // 同名同大小也可能是两份真的不一样的文件（同一份课件改了个错字又存回来一份），
+  // 悄悄丢掉一份，用户损失的是一份真文件。所以这里只标出来，跳过与否由用户点。
+  const dupKey = (name, size) => `${name}::${size}`;
+  const existingByKey = new Map();
+  for (const f of state.files) {
+    const k = dupKey(f.name, f.size);
+    if (!existingByKey.has(k)) existingByKey.set(k, f);
+  }
+  const dupsIn = (list) => list.filter((r) => existingByKey.has(dupKey(r.name, r.size)));
+  // 库里那份在哪个课程下，提示里要说清楚，用户才判断得出是不是同一份
+  const whereExisting = (f) => state.courses.find((c) => c.id === f.courseId)?.name || '待整理';
+  const dupTitle = (r) => {
+    const f = existingByKey.get(dupKey(r.name, r.size));
+    return `库里「${whereExisting(f)}」下已经有一份同名同大小的文件。如果就是同一份，可以排除它。`;
   };
 
   const refreshSummary = () => {
@@ -738,13 +794,20 @@ function openImportPreview(rows) {
     m.foot.querySelector('#preview-summary').textContent =
       unset ? `还有 ${unset} 个未指定课程` : `将导入 ${rows.length} 个文件`;
     m.foot.querySelector('#preview-ok').disabled = unset > 0;
+
+    const n = dupsIn(rows).length;
+    dropDups.hidden = n === 0;
+    dropDups.textContent = `排除 ${n} 个重复项`;
   };
 
   const renderRows = () => {
     body.innerHTML = rows.map((r, i) => {
       const cats = r.courseId ? categoriesOf(r.courseId) : [];
+      const dup = existingByKey.has(dupKey(r.name, r.size));
       return `<tr class="${r.courseId ? '' : 'needs-review'}">
-        <td class="fname" title="${escapeHtml(r.relPath || r.name)}">${escapeHtml(r.name)}</td>
+        <td class="fname" title="${escapeHtml(r.relPath || r.name)}">${escapeHtml(r.name)}${
+          dup ? `<span class="dup-tag" title="${escapeHtml(dupTitle(r))}">可能重复</span>` : ''
+        }</td>
         <td>
           <select data-row="${i}" data-kind="course" class="${r.courseId ? '' : 'unset'}">
             <option value="">— 未识别 —</option>
@@ -788,6 +851,21 @@ function openImportPreview(rows) {
   bulkCourse.onchange = () => fillCatOptions(bulkCat, bulkCourse.value);
   fillCatOptions(bulkCat, bulkCourse.value);
 
+  // 一键排除重复项。仍然是用户主动点的——只是把「一个个手动取消」变成一次点击，
+  // 而不是替用户决定什么该丢。
+  dropDups.onclick = () => {
+    const n = dupsIn(rows).length;
+    rows = rows.filter((r) => !existingByKey.has(dupKey(r.name, r.size)));
+    if (!rows.length) {
+      m.close();
+      toast(`这 ${n} 个文件库里都有了，没有要导入的`);
+      return;
+    }
+    renderRows();
+    refreshSummary();
+    toast(`已排除 ${n} 个重复项，剩下 ${rows.length} 个待导入`);
+  };
+
   m.body.querySelector('#apply-bulk').onclick = () => {
     if (!bulkCourse.value) { toast('先选一门课程'); return; }
     for (const r of rows) {
@@ -813,42 +891,61 @@ function openImportPreview(rows) {
 async function commitImport(rows) {
   const progress = openProgress('正在导入…');
   let done = 0;
+  let failure = null;
 
-  for (const r of rows) {
-    const id = uid();
-    const record = {
-      id,
-      courseId: r.courseId,
-      categoryId: r.categoryId,
-      name: r.name,
-      size: r.size,
-      mime: r.mime,
-      ext: r.ext,
-      relPath: r.relPath || '',
-      importedAt: Date.now(),
-      versionLabel: 'none',
-      // 提取不阻塞导入：先把文件收进来，正文慢慢补
-      extractStatus: isExtractable(r.name) ? 'pending' : 'unsupported',
-    };
+  // 循环里没有 catch 的话，配额一爆进度框就永远挂在那儿——
+  // 用户只能刷新页面，而且不知道到底进了几个。所以必须兜住。
+  try {
+    for (const r of rows) {
+      const id = uid();
+      const record = {
+        id,
+        courseId: r.courseId,
+        categoryId: r.categoryId,
+        name: r.name,
+        size: r.size,
+        mime: r.mime,
+        ext: r.ext,
+        relPath: r.relPath || '',
+        importedAt: Date.now(),
+        versionLabel: 'none',
+        // 提取不阻塞导入：先把文件收进来，正文慢慢补
+        extractStatus: isExtractable(r.name) ? 'pending' : 'unsupported',
+      };
 
-    await db.putTx({ files: record, blobs: { id, blob: r.file } });
-    done++;
-    if (done % 10 === 0) progress.set(`正在导入… ${done}/${rows.length}`);
+      await db.putTx({ files: record, blobs: { id, blob: r.file } });
+      done++;
+      if (done % 10 === 0) progress.set(`正在导入… ${done}/${rows.length}`);
+    }
+  } catch (err) {
+    failure = err;
   }
 
   // 顺序不能反：refreshVersions 是在 state.files 上分组的，
   // 必须先把刚写入的文件读回来，否则是在旧列表上算版本，等于没算。
+  // 中断时也要走这一步：已经写进去的那部分是真的进去了，
+  // 界面不读回来的话，用户以为一个没进、再导一次就重复了。
   progress.set('正在整理版本…');
   await loadAll();
-  await refreshVersions([...new Set(rows.map((r) => r.courseId).filter(Boolean))]);
+  await refreshVersions([...new Set(rows.slice(0, done).map((r) => r.courseId).filter(Boolean))]);
 
   progress.close();
 
-  const n = rows.length;
-  toast(`已导入 ${n} 个文件，正在后台提取正文`);
-  render();
+  if (failure) {
+    if (isQuotaError(failure)) {
+      toast(
+        `存储空间不够，只导入了 ${done}/${rows.length} 个。已导入的不会丢；` +
+        `可以先删掉一些旧文件，或到设置页导出备份后清理。`
+      );
+    } else {
+      toast(`导入中断：${done}/${rows.length} 个已导入。${failure.message || failure}`);
+    }
+  } else {
+    toast(`已导入 ${rows.length} 个文件，正在后台提取正文`);
+  }
 
-  runExtractionQueue();
+  render();
+  if (done) runExtractionQueue();
 }
 
 /** 对涉及的课程整组重算版本标记——新导入一份可能让原来的「最新版」变成旧版 */
@@ -866,7 +963,14 @@ async function refreshVersions(courseIds) {
 
 // ============================ 正文提取队列 ============================
 
-async function runExtractionQueue() {
+// 三处调用都是「发射后不管」的，所以入口统一兜一层：
+// 后台任务再出意外，也不该变成一个没人接的 promise rejection，
+// 更不该顺着调用栈把导入流程一起带崩。
+function runExtractionQueue() {
+  queueExtraction().catch((err) => console.warn('[extract] 队列意外中止', err));
+}
+
+async function queueExtraction() {
   if (state.extracting.running) return;
 
   const pending = state.files.filter((f) => f.extractStatus === 'pending');
@@ -875,32 +979,42 @@ async function runExtractionQueue() {
   state.extracting = { running: true, total: pending.length, done: 0 };
   renderExtractStatus();
 
-  for (const f of pending) {
-    try {
-      const row = await db.get('blobs', f.id);
-      if (!row?.blob) {
+  try {
+    for (const f of pending) {
+      try {
+        const row = await db.get('blobs', f.id);
+        if (!row?.blob) {
+          f.extractStatus = 'failed';
+        } else {
+          const { status, text } = await extractText(row.blob, f.name);
+          f.extractStatus = status;
+          f.textLength = text.length;
+          await db.putTx({
+            files: f,
+            texts: status === 'done' ? { id: f.id, text } : null,
+          });
+          if (status !== 'done') await db.remove('texts', f.id);
+        }
+      } catch (err) {
+        console.warn('[extract] 失败', f.name, err);
         f.extractStatus = 'failed';
-      } else {
-        const { status, text } = await extractText(row.blob, f.name);
-        f.extractStatus = status;
-        f.textLength = text.length;
-        await db.putTx({
-          files: f,
-          texts: status === 'done' ? { id: f.id, text } : null,
-        });
-        if (status !== 'done') await db.remove('texts', f.id);
+        // 这句「把失败结果记下来」自己也可能失败——如果上面挂掉的原因正是
+        // 存储空间满了，这里会再抛一次。它在原来的 try 外面，异常会一路逃出去，
+        // 循环就此中断，而且 running 停在 true 上再也回不来：正文提取从此彻底不动了。
+        try {
+          await db.put('files', f);
+        } catch (err2) {
+          console.warn('[extract] 连失败状态都没能记下', f.name, err2);
+        }
       }
-    } catch (err) {
-      console.warn('[extract] 失败', f.name, err);
-      f.extractStatus = 'failed';
-      await db.put('files', f);
+      state.extracting.done++;
+      renderExtractStatus();
     }
-    state.extracting.done++;
+  } finally {
+    // 不管中间怎么中断，队列必须能重新跑起来
+    state.extracting.running = false;
     renderExtractStatus();
   }
-
-  state.extracting.running = false;
-  renderExtractStatus();
 
   // 提取完正文后，如果用户正停在搜索页，把正文结果补上
   if (state.view === 'search' && state.query.trim()) {
@@ -1066,6 +1180,56 @@ function todayStamp() {
 
 // ============================ 设置页 ============================
 
+// 填设置页的「存储空间」卡片。数字直接来自浏览器，不自己估。
+async function fillStorageCard() {
+  const card = $('#storage-card');
+  if (!card) return;
+  const desc = card.querySelector('#storage-desc');
+  const btn = card.querySelector('#storage-persist');
+
+  if (!navigator.storage || !navigator.storage.estimate) {
+    desc.textContent = '这个浏览器不支持查询存储额度，只能自己留意别塞太满。';
+    return;
+  }
+
+  let estimate = null;
+  let persisted = false;
+  try {
+    estimate = await navigator.storage.estimate();
+    if (navigator.storage.persisted) persisted = await navigator.storage.persisted();
+  } catch (err) {
+    console.warn('读取存储额度失败：', err);
+  }
+  if (!desc.isConnected) return; // 读取期间用户切去别的页面了，写回去也没人看
+
+  if (!estimate || !estimate.quota) {
+    desc.textContent = '这个浏览器没有给出额度数字，只能自己留意别塞太满。';
+    return;
+  }
+
+  const used = estimate.usage || 0;
+  const quota = estimate.quota;
+  const pct = Math.min(100, Math.round((used / quota) * 100));
+
+  // 这里的数全是我们自己算的，不掺任何用户输入，拼 innerHTML 是安全的
+  const parts = [
+    `浏览器给本站的额度约 <b>${formatBytes(quota)}</b>，已用 <b>${formatBytes(used)}</b>（${pct}%）。`,
+    // 这个数总比上面「占用空间」大，不说清楚会让人以为哪边算错了
+    '<span style="color:var(--muted)">它比上面那个「占用空间」大是正常的：文件本身的字节数之外，索引和提取出的正文也占地方。</span>',
+  ];
+  if (pct >= 80) {
+    parts.push('<span style="color:var(--danger)">快到上限了。再导入大文件可能被直接拒绝，建议先导出备份，再删掉一些旧文件。</span>');
+  }
+  if (persisted) {
+    parts.push('已获得<b>持久化存储</b>：除非你自己清理，浏览器不会自动删掉资料。');
+  } else {
+    parts.push('还没有拿到<b>持久化存储</b>——磁盘紧张时浏览器可能自动清掉本站数据。建议点下面的按钮申请一下。');
+  }
+
+  desc.innerHTML = parts.join('<br>');
+  btn.hidden = persisted;
+}
+
 async function renderSettings(main) {
   const data = await currentData();
   const totalSize = data.files.reduce((s, f) => s + (f.size || 0), 0);
@@ -1110,6 +1274,14 @@ async function renderSettings(main) {
       </div>
     </div>
 
+    <div class="card" id="storage-card">
+      <h3 class="card-title">存储空间</h3>
+      <p class="card-desc" id="storage-desc">正在读取…</p>
+      <div class="card-actions">
+        <button class="primary-btn" id="storage-persist" hidden>申请持久化存储</button>
+      </div>
+    </div>
+
     <div class="card">
       <h3 class="card-title">关于</h3>
       <p class="card-desc">
@@ -1128,6 +1300,27 @@ async function renderSettings(main) {
         <button class="ghost-btn" id="set-wipe" style="color:var(--danger);border-color:#eeb4b4">清空全部数据</button>
       </div>
     </div>`;
+
+  // 配额要问浏览器，不能把文件大小加一加充数：加出来的数永远小于实际占用的
+  // （元数据、索引、提取出的正文都算空间）。报个小数字反而害人——
+  // 用户看到「才 400MB」就放心继续导，然后突然写不进去了。
+  // 这里不 await，让设置页先画出来，数字随后填。
+  fillStorageCard();
+
+  main.querySelector('#storage-persist').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const ok = await navigator.storage.persist();
+      toast(ok
+        ? '已获得持久化存储，除非你自己清理，浏览器不会自动删掉资料'
+        : '浏览器没批准。先把本站「添加到主屏幕」装成 App，再回来申请，一般就会批。');
+    } catch (err) {
+      toast('申请失败：' + (err.message || err));
+    }
+    btn.disabled = false;
+    fillStorageCard();
+  };
 
   main.querySelector('#set-export-all').onclick = async () => {
     const progress = openProgress('正在打包…');
@@ -1157,17 +1350,7 @@ async function renderSettings(main) {
     }
   };
 
-  main.querySelector('#set-restore').onclick = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.zip';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      openConfirmRestore(file);
-    };
-    input.click();
-  };
+  main.querySelector('#set-restore').onclick = () => $('#backup-input').click();
 
   main.querySelector('#set-wipe').onclick = () => {
     const m = openModal({
@@ -1231,6 +1414,14 @@ function openConfirmRestore(file) {
 
 // ============================ 弹层 ============================
 
+// 当前最上面那层弹层。进度框（openProgress）也是 .modal-backdrop，
+// 于是「进度框盖在弹窗上」时 Esc 不会有任何反应——这正是想要的：
+// 后台还在写数据，这时候让 Esc 关掉底下的弹窗只会更乱。
+function topModal() {
+  const all = document.querySelectorAll('.modal-backdrop');
+  return all.length ? all[all.length - 1] : null;
+}
+
 function openModal({ title, body, foot, wide }) {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
@@ -1249,10 +1440,22 @@ function openModal({ title, body, foot, wide }) {
   bodyEl.innerHTML = body || '';
   const footEl = backdrop.querySelector('.modal-foot');
 
-  const close = () => backdrop.remove();
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    backdrop.remove();
+  };
   backdrop.querySelector('.close-x').onclick = close;
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
-  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
+
+  // 弹窗会叠着开：「编辑课程」上面再压一个「删除确认」。
+  // Esc 只能关最上面那层——关整摞会连下面那份没保存的编辑一起丢掉。
+  // 所以先问一句「我是不是最上面那层」，不是就装没听见。
+  // 另外 close() 里必须摘掉监听，否则每开关一次弹窗就永久漏一个监听到 document 上。
+  const onKey = (e) => {
+    if (e.key !== 'Escape') return;
+    if (topModal() !== backdrop) return;
+    close();
+  };
   document.addEventListener('keydown', onKey);
 
   return { el: backdrop, body: bodyEl, foot: footEl, close };
@@ -1307,6 +1510,55 @@ function openSemesterDialog() {
   m.foot.querySelector('#sem-cancel').onclick = () => m.close();
   m.foot.querySelector('#sem-ok').onclick = submit;
   input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+}
+
+// 删除学期。它下面挂着课程，课程下面挂着文件——点一下可能删掉几百个文件，
+// 所以确认框里必须把数量写明白，用户才判断得出来是不是点错了。
+// 另外给一条退路：想把课程挪到别的学期，改课程的「所属学期」就行，不用删。
+function openDeleteSemester(semId) {
+  const sem = state.semesters.find((s) => s.id === semId);
+  if (!sem) return;
+
+  const courseIds = new Set(state.courses.filter((c) => c.semesterId === semId).map((c) => c.id));
+  const files = state.files.filter((f) => courseIds.has(f.courseId));
+
+  const m = openModal({
+    title: '删除学期',
+    body: `<p style="line-height:1.8;margin:0">
+      将删除学期「${escapeHtml(sem.name)}」${courseIds.size ? `，以及它下面的 <b>${courseIds.size}</b> 门课程和 <b>${files.length}</b> 个文件` : ''}，<b style="color:var(--danger)">不可撤销</b>。</p>
+      ${courseIds.size ? `<p class="card-desc" style="margin:12px 0 0;font-size:13px">
+        如果只是想把课程挪到别的学期，不用删：在课程里改「所属学期」即可。</p>` : ''}`,
+    foot: `<span class="spacer"></span>
+      <button class="ghost-btn" id="sd-cancel">取消</button>
+      <button class="primary-btn" id="sd-ok" style="background:var(--danger)">删除</button>`,
+  });
+
+  m.foot.querySelector('#sd-cancel').onclick = () => m.close();
+  m.foot.querySelector('#sd-ok').onclick = async () => {
+    const fileIds = files.map((f) => f.id);
+    const catIds = state.categories.filter((c) => courseIds.has(c.courseId)).map((c) => c.id);
+
+    // 顺序和删课程一致：先清文件本体和正文，再清课程、分类，最后才是学期本身。
+    // 中途失败的话，剩下的顶多是一个空学期，而不是一堆找不到归属的孤儿记录。
+    if (fileIds.length) await db.deleteTx({ files: fileIds, blobs: fileIds, texts: fileIds });
+    if (catIds.length) await db.deleteTx({ categories: catIds });
+    if (courseIds.size) await db.deleteTx({ courses: [...courseIds] });
+    await db.remove('semesters', semId);
+
+    // 正看着的课程要是被删了，视图得换个落脚点，
+    // 否则界面会停在一门已经不存在的课上，看着像空白
+    if (courseIds.has(state.courseId)) {
+      state.courseId = state.courses.find((c) => !courseIds.has(c.id))?.id || null;
+      state.view = 'course';
+    }
+    if (state.semesterId === semId) state.semesterId = null;
+    state.selection.clear();
+
+    await loadAll();
+    m.close();
+    toast('学期已删除');
+    render();
+  };
 }
 
 function openCourseDialog(existing) {

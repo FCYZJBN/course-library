@@ -45,6 +45,9 @@
   <!-- 文件选择：普通选文件 / 选整个文件夹（Chromium 系支持目录选择） -->
   <input type="file" id="file-input" multiple hidden />
   <input type="file" id="dir-input" webkitdirectory directory multiple hidden />
+  <!-- 从备份还原。常驻在页面里而不是临时 createElement：
+       临时建的 input 不挂在文档上，自动化测试够不着这条最危险的路。 -->
+  <input type="file" id="backup-input" accept=".zip,application/zip" hidden />
 
   <script src="vendor/jszip.min.js"></script>
   <script type="module" src="js/app.js"></script>

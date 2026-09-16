@@ -119,3 +119,16 @@ export function snippetAround(text, keyword, radius = 40) {
   const end = Math.min(text.length, idx + keyword.length + radius);
   return (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
 }
+
+// 写入超出浏览器给本站的存储配额。各家浏览器的报法不一样：
+// Chrome/Edge 抛 QuotaExceededError（code 22），Firefox 是 NS_ERROR_DOM_QUOTA_REACHED（1014），
+// Safari 历史上还用过一个 code 22 的 DOMException。逐个认，别只看 name。
+export function isQuotaError(err) {
+  if (!err) return false;
+  return (
+    err.name === 'QuotaExceededError' ||
+    err.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    err.code === 22 ||
+    err.code === 1014
+  );
+}

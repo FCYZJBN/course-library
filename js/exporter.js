@@ -127,13 +127,40 @@ export async function exportBackup(data, progress) {
  * @returns {Promise<{semesters:number, courses:number, files:number, missing:number}>}
  */
 export async function importBackup(file, progress) {
-  const zip = await JSZip.loadAsync(file);
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(file);
+  } catch {
+    throw new Error('这个文件不是 zip，或者下载时损坏了。请重新导出备份再试。');
+  }
 
   const metaFile = zip.file(META_NAME);
   if (!metaFile) throw new Error('这不是本工具导出的备份文件（缺少 metadata.json）');
 
-  const meta = JSON.parse(await metaFile.async('string'));
+  let meta;
+  try {
+    meta = JSON.parse(await metaFile.async('string'));
+  } catch {
+    throw new Error('备份包里的 metadata.json 读不出来，文件可能已损坏。');
+  }
   if (meta.app !== APP_TAG) throw new Error('备份文件来自其它应用，无法还原');
+
+  const fileMetas = Array.isArray(meta.files) ? meta.files : [];
+
+  // —— 动手清空之前的最后一道检查 ——
+  // 清空是不可逆的，而「选错文件」是最常见的失败：
+  // 把「导出全部资料」的包当成备份导进来（它没有 metadata.json，上面已经拦了），
+  // 或者下载没下完、zip 被截断。所以先拿 zip 的目录索引核对一遍文件名，
+  // 这一步不需要解压任何文件，几乎不花时间，但能在毁掉数据之前喊停。
+  if (fileMetas.length) {
+    const absent = fileMetas.filter((fm) => !fm.path || !zip.file(fm.path)).length;
+    if (absent > fileMetas.length * 0.2) {
+      throw new Error(
+        `备份包不完整：${fileMetas.length} 个文件里有 ${absent} 个在包里找不到。` +
+        `为安全起见没有清空现有数据，请换一个备份文件重试。`
+      );
+    }
+  }
 
   onProgress(progress, '正在清空现有数据…');
   await clear('files');
@@ -146,7 +173,6 @@ export async function importBackup(file, progress) {
   const semesters = meta.semesters || [];
   const courses = meta.courses || [];
   const categories = meta.categories || [];
-  const fileMetas = meta.files || [];
 
   // 先把元数据一次写进去
   await putTx({

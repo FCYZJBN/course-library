@@ -311,10 +311,284 @@ async function main() {
       '备份 zip 有实际内容（大于 1KB）'
     );
 
-    // ============ 9. Service Worker 与离线 ============
+    // 下面还原那节要复用这个包。blob URL 十秒后会被 revoke，
+    // 等走到那里早过期了，所以趁现在把字节本身接住，别只留个会失效的地址。
+    const backupSize = await js(
+      `fetch(window.__downloads[0].href)
+         .then(r => r.blob())
+         .then(b => { window.__backupBlob = b; return b.size; })`
+    );
+    check(backupSize > 1000, '已抓住备份包的字节供还原测试使用', `读到 ${backupSize} 字节`);
+
+    // ============ 9. 备份 → 还原 ============
+    // 还原会先清空整个资料库再写回去。这条路走错一次，用户一学期的资料就没了，
+    // 所以它比别的功能更该被测到。顺序是刻意的：先放两个坏包进去，
+    // 确认它们被挡在清空之前；再放真包，确认数据一个不少地长回来。
+    console.log('\n[9] 备份与还原');
+
+    // 把一段 blob 塞进 #backup-input 并触发 change。
+    // input.files 是只读的，直接赋值不行；走 DataTransfer 是浏览器里
+    // 唯一不需要真实文件路径就能模拟「选了某个文件」的正规做法。
+    const feedBackup = (blobExpr) => js(`(async () => {
+      const blob = await ${blobExpr};
+      const dt = new DataTransfer();
+      dt.items.add(new File([blob], 'backup.zip', { type: 'application/zip' }));
+      const input = document.querySelector('#backup-input');
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change'));
+      return true;
+    })()`);
+
+    const openSettings = async () => {
+      await js(`document.querySelector('#btn-settings').click()`);
+      await waitFor(`!!document.querySelector('#set-restore')`, '设置页');
+    };
+
+    // 点开某门课，数它下面有几个文件行
+    const rowsIn = async (courseName = '高等数学') => {
+      await js(`(() => {
+        const b = [...document.querySelectorAll('#sidebar .course-item')]
+          .find(e => e.querySelector('.course-label')?.textContent === ${JSON.stringify(courseName)});
+        b && b.click();
+      })()`);
+      await sleep(400);
+      return js(`document.querySelectorAll('.file-row').length`);
+    };
+    const rowsInMath = () => rowsIn('高等数学');
+
+    const beforeRestore = await rowsInMath();
+    check(beforeRestore >= 4, '还原前「高等数学」下有文件', `读到 ${beforeRestore} 行`);
+
+    // —— 坏包一：根本不是 zip（比如选错了文件）——
+    await openSettings();
+    await feedBackup(`new Blob(['这不是一个 zip'], { type: 'application/zip' })`);
+    await waitFor(`!!document.querySelector('#rs-ok')`, '还原确认框（坏包一）');
+    await js(`document.querySelector('#rs-ok').click()`);
+
+    let rejected = true;
+    try {
+      await waitFor(
+        `document.querySelector('#toast').textContent.includes('还原失败')`,
+        '坏包一被拒收',
+        20000
+      );
+    } catch { rejected = false; }
+    check(rejected, '选了非备份文件：明确报错，不开始还原');
+    checkEq(await rowsInMath(), beforeRestore, '坏包一之后原数据完好无损');
+
+    // —— 坏包二：有 metadata.json，但包里几乎没有它声称的文件 ——
+    // 这是「下载没下完 / 传到一半断了」的典型样子，也是
+    // importBackup 里那道预检专门要拦的情况：包看着像真的，
+    // 清空之后才发现解不出东西，那时候已经来不及了。
+    await openSettings();
+    await feedBackup(`(async () => {
+      const z = new JSZip();
+      z.file('metadata.json', JSON.stringify({
+        app: 'course-library', version: 1, exportedAt: Date.now(),
+        semesters: [], courses: [], categories: [],
+        files: Array.from({ length: 10 }, (_, i) => ({
+          id: 'x' + i, name: 'f' + i + '.txt', path: '缺失/f' + i + '.txt',
+        })),
+      }));
+      return z.generateAsync({ type: 'blob' });
+    })()`);
+    await waitFor(`!!document.querySelector('#rs-ok')`, '还原确认框（坏包二）');
+    await js(`document.querySelector('#rs-ok').click()`);
+
+    rejected = true;
+    try {
+      await waitFor(
+        `document.querySelector('#toast').textContent.includes('不完整')`,
+        '坏包二被拒收',
+        20000
+      );
+    } catch { rejected = false; }
+    check(rejected, '残缺的备份包：在清空之前就被拦下');
+    checkEq(await rowsInMath(), beforeRestore, '坏包二之后原数据完好无损');
+
+    // —— 真包：清空之后必须一模一样地长回来 ——
+    await openSettings();
+    await feedBackup(`Promise.resolve(window.__backupBlob)`);
+    await waitFor(`!!document.querySelector('#rs-ok')`, '还原确认框');
+    await js(`document.querySelector('#rs-ok').click()`);
+    await waitFor(
+      `document.querySelector('#toast').textContent.includes('还原完成')`,
+      '还原完成',
+      60000
+    );
+
+    checkEq(await rowsInMath(), beforeRestore, '还原后「高等数学」的文件一个不少');
+    const afterCourses = await js(`document.querySelectorAll('#sidebar .course-label').length`);
+    check(afterCourses >= 3, '还原后课程都在', `读到 ${afterCourses} 门课`);
+
+    // 正文按设计不进备份包，还原后要重新提取一遍。
+    // 「还原完了但搜不到东西」等于白还原，所以要等到搜索真的能用为止。
+    await js(`(() => {
+      const i = document.querySelector('#search');
+      i.value = '洛必达法则';
+      i.dispatchEvent(new Event('input'));
+    })()`);
+    let contentBack = true;
+    try {
+      await waitFor(`document.querySelectorAll('.file-row').length >= 1`, '还原后正文重新提取完成', 40000);
+    } catch { contentBack = false; }
+    check(contentBack, '还原后正文被重新提取，内容搜索恢复可用');
+
+    await js(`(() => {
+      const i = document.querySelector('#search');
+      i.value = '';
+      i.dispatchEvent(new Event('input'));
+    })()`);
+    await sleep(600);
+
+    // ============ 10. 弹层 ============
+    // 「编辑课程」上压着「删除课程」时，Esc 只该关掉上面那层。
+    // 关整摞会把下面那份没保存的编辑一起丢掉，用户白白重填一遍。
+    console.log('\n[10] 弹层行为');
+
+    await rowsInMath();
+    await js(`document.querySelector('#btn-edit-course').click()`);
+    await waitFor(`!!document.querySelector('#c-name')`, '课程编辑弹窗');
+    await js(`(() => {
+      const i = document.querySelector('#c-name');
+      i.value = '高等数学（改了一半）';
+      i.dispatchEvent(new Event('input'));
+    })()`);
+    await js(`document.querySelector('#c-del').click()`);
+    await waitFor(`!!document.querySelector('#cd-cancel')`, '删除确认弹窗');
+
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+    await sleep(250);
+
+    checkEq(
+      await js(`document.querySelectorAll('.modal-backdrop').length`),
+      1,
+      'Esc 只关掉最上面那层弹窗'
+    );
+    checkEq(
+      await js(`document.querySelector('#c-name')?.value`),
+      '高等数学（改了一半）',
+      '下面那层弹窗还在，没保存的输入没丢'
+    );
+
+    // 收尾：把这一层也关掉，别影响后面的测试
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+    await sleep(250);
+    checkEq(await js(`document.querySelectorAll('.modal-backdrop').length`), 0, '再按一次 Esc 全部关干净');
+
+    // ============ 11. 删除学期 ============
+    // 建错一个学期（打错字、重复建）过去是删不掉的，只能一直挂在那儿。
+    // 但学期下面挂着课程、课程下面挂着文件，所以「能删」和「不能悄悄删干净」
+    // 得同时成立：数字要写清楚，删完不能留下孤儿记录。
+    console.log('\n[11] 删除学期');
+
+    const semCountOf = (name) => js(`
+      [...document.querySelectorAll('#sidebar .sem-block')]
+        .filter(b => b.querySelector('.sem-label')?.textContent === ${JSON.stringify(name)}).length`);
+
+    // 先建一个专门用来删的学期，并在里面建一门课
+    await js(`document.querySelector('#side-new-sem').click()`);
+    await waitFor(`!!document.querySelector('#sem-name')`, '新建学期弹窗');
+    await js(`(() => {
+      const i = document.querySelector('#sem-name');
+      i.value = '2030 春（待删）';
+      i.dispatchEvent(new Event('input'));
+      document.querySelector('#sem-ok').click();
+    })()`);
+    await waitFor(`!!document.querySelector('#c-name')`, '紧接着弹出的新建课程弹窗');
+    await js(`(() => {
+      const i = document.querySelector('#c-name');
+      i.value = '临时课程';
+      i.dispatchEvent(new Event('input'));
+      document.querySelector('#c-ok').click();
+    })()`);
+    await waitFor(`!document.querySelector('#c-name')`, '临时课程创建完成');
+    checkEq(await semCountOf('2030 春（待删）'), 1, '临时学期已建好');
+
+    // 数「高等数学」下面的文件——固定看一门课，避免视图自己跑偏导致前后不可比
+    const mathFilesBeforeDel = await rowsInMath();
+
+    // 删它
+    await js(`(() => {
+      const b = [...document.querySelectorAll('#sidebar .sem-block')]
+        .find(x => x.querySelector('.sem-label')?.textContent === '2030 春（待删）');
+      b.querySelector('.sem-del').click();
+    })()`);
+    await waitFor(`!!document.querySelector('#sd-ok')`, '删除学期确认框');
+    const delWarn = await js(`document.querySelector('.modal-body').textContent`);
+    check(
+      delWarn.includes('1') && delWarn.includes('不可撤销'),
+      '确认框里写明了要连带删掉多少',
+      `实际文案：「${delWarn.replace(/\s+/g, ' ').trim()}」`
+    );
+
+    await js(`document.querySelector('#sd-ok').click()`);
+    await waitFor(`document.querySelector('#toast').textContent.includes('学期已删除')`, '学期删除完成');
+
+    checkEq(await semCountOf('2030 春（待删）'), 0, '学期确实删掉了');
+    checkEq(
+      await js(`
+        [...document.querySelectorAll('#sidebar .course-label')]
+          .filter(e => e.textContent === '临时课程').length`),
+      0,
+      '学期下的课程一并删掉，没留孤儿'
+    );
+    // 别把原库里的东西误伤：原来的三门课和文件都得还在
+    check(
+      (await js(`document.querySelectorAll('#sidebar .course-label').length`)) >= 3,
+      '原有课程没被误删'
+    );
+    checkEq(await rowsInMath(), mathFilesBeforeDel, '原有文件没被误删');
+
+    // ============ 12. 重复文件的提示 ============
+    // 同一份文件导两次，过去只会静悄悄多出一条记录，要用户自己发现。
+    // 现在预览里标出来，并给一个一次点击就排除的按钮——但默认不替用户跳过：
+    // 同名同大小也可能是两份都该留的文件，替用户丢东西比不提醒更糟。
+    console.log('\n[12] 重复文件的提示');
+
+    // 把已经导进来过的那个 pptx 再选一次
+    await cdp.setFileInput('#file-input', [join(fixturesDir, '工程力学-第3章-课件.pptx')]);
+    await waitFor(`!!document.querySelector('#preview-ok')`, '导入预览');
+
+    checkEq(
+      await js(`document.querySelectorAll('.dup-tag').length`),
+      1,
+      '预览里标出了「可能重复」'
+    );
+
+    const dropLabel = await js(`document.querySelector('#drop-dups').textContent`);
+    const dropHidden = await js(`document.querySelector('#drop-dups').hidden`);
+    check(!dropHidden && /\d/.test(dropLabel), '给出了排除重复项的入口', `按钮文案：「${dropLabel}」`);
+
+    // 不点排除按钮的时候，重复项照样在待导入列表里——默认行为没变
+    checkEq(
+      await js(`document.querySelector('#preview-ok').disabled`),
+      false,
+      '默认仍然照常导入，不擅自替用户跳过'
+    );
+
+    checkEq(
+      await js(`document.querySelectorAll('#preview-body tr').length`),
+      1,
+      '不点排除时重复项仍在待导入列表里'
+    );
+
+    await js(`document.querySelector('#drop-dups').click()`);
+    await waitFor(
+      `document.querySelector('#toast').textContent.includes('没有要导入的')`,
+      '全部排除后关闭预览',
+      10000
+    );
+    checkEq(
+      await js(`document.querySelectorAll('.modal-backdrop').length`),
+      0,
+      '全部都是重复项时直接收工，不会导入一份空列表'
+    );
+
+    // ============ 13. Service Worker 与离线 ============
     // 离线可用是这个产品的核心承诺（数据本来就在本地，没道理断网就打不开），
     // 所以真断网重载一次，确认外壳和数据都还在。
-    console.log('\n[9] Service Worker 与离线');
+    console.log('\n[13] Service Worker 与离线');
 
     let swReady = false;
     for (let i = 0; i < 40 && !swReady; i++) {
@@ -354,8 +628,67 @@ async function main() {
       offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
     });
 
-    // ============ 10. 无未捕获异常 ============
-    console.log('\n[10] 异常检查');
+    // ============ 14. 存储写满时的表现 ============
+    // 浏览器给网页的配额是有限的，塞满了就是塞满了——迟早会碰上。
+    // 本来想用 CDP 的 Storage.overrideQuotaForOrigin 把配额压小来制造这个局面，
+    // 试过了：这个实验性命令对 IndexedDB 不生效（在 Chrome 里它只影响 estimate 报出来的数），
+    // 把配额压到 1KB、重载过，3KB 的文件照样写得进去。真塞几 GB 又不现实。
+    // 所以改用故障注入：拦下往 blobs 表里的写，抛出的正是 Chrome 配额爆掉时抛的那个
+    // 异常形状（DOMException / QuotaExceededError）。它验的是「撞上配额之后应用怎么办」，
+    // 而那正是这一段要保证的事。
+    console.log('\n[14] 存储写满时的表现');
+
+    // 要导进去的那门课，先记下它现在有几个文件
+    const mechBefore = await rowsIn('工程力学');
+
+    await js(`(() => {
+      window.__origPut = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (...args) {
+        if (this.name === 'blobs') throw new DOMException('Quota exceeded.', 'QuotaExceededError');
+        return window.__origPut.apply(this, args);
+      };
+    })()`);
+
+    // 只导这一个：它能被自动认出课程，预览里不需要人工指定，可以直接确认
+    await cdp.setFileInput('#file-input', [join(fixturesDir, '工程力学-第3章-课件.pptx')]);
+    await waitFor(`!!document.querySelector('#preview-ok')`, '导入预览');
+    await js(`document.querySelector('#preview-ok').click()`);
+
+    let reported = true;
+    try {
+      await waitFor(
+        `document.querySelector('#toast').textContent.includes('存储空间不够')`,
+        '提示存储空间不足',
+        30000
+      );
+    } catch { reported = false; }
+    // 把真实提示带进失败信息里：这一条挂掉时，最想知道的就是它到底说了什么
+    const quotaToast = await js(`document.querySelector('#toast').textContent`);
+    check(reported, '写满时给出明确提示，而不是静默失败', `实际提示：「${quotaToast}」`);
+
+    // 这条是重点：进度框是模态的，挂着不走等于整个应用卡死，用户只能刷新
+    checkEq(
+      await js(`document.querySelectorAll('.modal-backdrop').length`),
+      0,
+      '写满后进度框已关闭，应用没有卡死'
+    );
+    check(
+      (await js(`document.querySelectorAll('#sidebar .course-label').length`)) >= 3,
+      '写满后界面仍然可用'
+    );
+    // 文件和它的本体是在同一个事务里写的，写不进去就该两边都没有：
+    // 只剩一条没有本体的记录，用户会看到一个点开是空的文件，比报错还难查。
+    checkEq(
+      await rowsIn('工程力学'),
+      mechBefore,
+      '写不进去的文件没有留下半条记录（事务整体回滚）'
+    );
+
+    // 撤掉注入，免得污染后面的异常检查
+    await js(`(() => { if (window.__origPut) IDBObjectStore.prototype.put = window.__origPut; })()`);
+
+    // ============ 15. 无未捕获异常 ============
+    console.log('\n[15] 异常检查');
     check(pageErrors.length === 0, '全程没有未捕获异常', pageErrors.join('\n        '));
 
   } finally {

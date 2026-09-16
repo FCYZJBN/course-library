@@ -253,6 +253,41 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .sem-name .count { color: var(--muted); font-weight: 400; }
 
+/* 删除学期的入口。平时压暗但一直看得见——纯 hover 才出现的按钮
+   在触屏上是点不到的，而侧栏在手机布局里本来就会收起来，
+   留着可见度至少不会让人以为「这学期删不掉」。 */
+.sem-del {
+  flex: none;
+  margin-left: auto; /* 顶到最右边（.spacer 只在弹层里定义过，这里用不了） */
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.45;
+}
+
+.sem-block:hover .sem-del { opacity: 1; }
+.sem-del:hover { color: var(--danger); background: #fdecec; }
+.sem-del:focus-visible { opacity: 1; outline: 2px solid var(--primary); }
+
+/* 导入预览里的「可能重复」标记。刻意用提示色而不是警告色：
+   重复未必是错，同名同大小也可能是两份该都留下的文件。 */
+.dup-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: #fff4e0;
+  color: var(--warn);
+  font-size: 11px;
+  vertical-align: 1px;
+  cursor: help;
+}
+
 .course-item {
   display: flex;
   align-items: center;
