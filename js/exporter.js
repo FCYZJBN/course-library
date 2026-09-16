@@ -145,22 +145,56 @@ export async function importBackup(file, progress) {
   }
   if (meta.app !== APP_TAG) throw new Error('备份文件来自其它应用，无法还原');
 
-  const fileMetas = Array.isArray(meta.files) ? meta.files : [];
+  const rawFiles = Array.isArray(meta.files) ? meta.files : [];
 
   // —— 动手清空之前的最后一道检查 ——
   // 清空是不可逆的，而「选错文件」是最常见的失败：
   // 把「导出全部资料」的包当成备份导进来（它没有 metadata.json，上面已经拦了），
   // 或者下载没下完、zip 被截断。所以先拿 zip 的目录索引核对一遍文件名，
   // 这一步不需要解压任何文件，几乎不花时间，但能在毁掉数据之前喊停。
-  if (fileMetas.length) {
-    const absent = fileMetas.filter((fm) => !fm.path || !zip.file(fm.path)).length;
-    if (absent > fileMetas.length * 0.2) {
+  if (rawFiles.length) {
+    const absent = rawFiles.filter((fm) => !fm.path || !zip.file(fm.path)).length;
+    if (absent > rawFiles.length * 0.2) {
       throw new Error(
-        `备份包不完整：${fileMetas.length} 个文件里有 ${absent} 个在包里找不到。` +
+        `备份包不完整：${rawFiles.length} 个文件里有 ${absent} 个在包里找不到。` +
         `为安全起见没有清空现有数据，请换一个备份文件重试。`
       );
     }
   }
+
+  // —— 重新发一套 id ——
+  // 库里所有 id 本该是 uid() 生成的，所以拼 HTML 时到处直接把 ${x.id} 写进属性，
+  // 谁也没想过它会是别的样子。但备份包是别人给的：metadata.json 里的 id 想写什么写什么，
+  // 一个带引号加事件属性的 id 就能从 data-* 里逃出来执行脚本。
+  // 与其在十几个拼 HTML 的地方各补一次转义（那种事总有一处会漏），
+  // 不如在这儿掐掉：进来的 id 一律不用，统一重发，并把互相之间的引用一起改过来。
+  // 顺带也修掉了重复 id、缺失 id 这类脏数据。
+  const idMap = new Map();
+  const remap = (old) => {
+    if (old == null || old === '') return uid();
+    const key = String(old);
+    if (!idMap.has(key)) idMap.set(key, uid());
+    return idMap.get(key);
+  };
+
+  // 顺序不能乱：定义方先处理，后面引用它的才拿得到同一个新 id
+  const semesters = (meta.semesters || []).map((s) => ({ ...s, id: remap(s.id) }));
+  const courses = (meta.courses || []).map((c) => ({
+    ...c,
+    id: remap(c.id),
+    semesterId: remap(c.semesterId),
+  }));
+  const categories = (meta.categories || []).map((c) => ({
+    ...c,
+    id: remap(c.id),
+    courseId: remap(c.courseId),
+  }));
+  const fileMetas = rawFiles.map((f) => ({
+    ...f,
+    id: remap(f.id),
+    courseId: remap(f.courseId),
+    categoryId: remap(f.categoryId),
+  }));
 
   onProgress(progress, '正在清空现有数据…');
   await clear('files');
@@ -169,10 +203,6 @@ export async function importBackup(file, progress) {
   await clear('courses');
   await clear('semesters');
   await clear('categories');
-
-  const semesters = meta.semesters || [];
-  const courses = meta.courses || [];
-  const categories = meta.categories || [];
 
   // 先把元数据一次写进去
   await putTx({

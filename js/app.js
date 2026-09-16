@@ -175,7 +175,7 @@ function renderSidebar() {
       <div class="sem-name">
         <span class="sem-label">${escapeHtml(s.name)}</span>
         <span class="count">${list.length} 门</span>
-        <button class="sem-del" data-del-sem="${s.id}" title="删除这个学期">✕</button>
+        <button class="sem-del" data-del-sem="${escapeHtml(s.id)}" title="删除这个学期">✕</button>
       </div>
       ${items || '<div class="side-empty" style="padding:4px 10px 8px">暂无课程</div>'}
     </div>`;
@@ -435,7 +435,7 @@ function renderFileArea(list, cats, opts = {}) {
   const renderGroup = (title, files, icon) => {
     if (!files.length) return '';
     return `<div style="margin-bottom:20px">
-      <div class="sem-name" style="padding-left:2px">${icon || ''} ${escapeHtml(title)}
+      <div class="sem-name" style="padding-left:2px">${escapeHtml(icon || '')} ${escapeHtml(title)}
         <span class="count">${files.length}</span></div>
       <div class="file-list">${files.map((f) => renderFileRow(f, opts)).join('')}</div>
     </div>`;

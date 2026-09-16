@@ -694,8 +694,64 @@ async function main() {
     // 撤掉注入，免得污染后面的异常检查
     await js(`(() => { if (window.__origPut) IDBObjectStore.prototype.put = window.__origPut; })()`);
 
-    // ============ 15. 无未捕获异常 ============
-    console.log('\n[15] 异常检查');
+    // ============ 15. 备份包里的 id 不可信 ============
+    // 库里的 id 都是 uid() 生成的，所以拼 HTML 时到处直接写 ${x.id} 进属性。
+    // 但备份包是别人给的文件，metadata.json 里的 id 想写什么写什么——
+    // 一个带引号加事件属性的 id 就能从 data-* 里逃出来执行脚本。
+    // 这里塞一个这样的人造包进去，验证它被当成普通数据、没有变成代码。
+    console.log('\n[15] 备份包里的 id 不可信');
+
+    await openSettings();
+    await feedBackup(`(async () => {
+      const evil = 'x" onmouseover="window.__pwned=1" data-x="';
+      const z = new JSZip();
+      z.file('metadata.json', JSON.stringify({
+        app: 'course-library', version: 1, exportedAt: Date.now(),
+        semesters: [{ id: evil, name: '正常人名字', sortOrder: 0 }],
+        courses: [{ id: evil, name: '正常人课程', semesterId: evil, aliases: [], sortOrder: 0 }],
+        categories: [{
+          id: evil, courseId: evil, name: '正常人分类', key: 'other', sortOrder: 1,
+          // 图标同样来自备份包，同样会被拼进 HTML
+          icon: '<img src=x onerror="window.__pwned2=1">',
+        }],
+        files: [{ id: evil, courseId: evil, categoryId: evil, name: '正常.txt', size: 5, ext: 'txt', path: 'a/正常.txt' }],
+      }));
+      z.file('a/正常.txt', new Blob(['hello']));
+      return z.generateAsync({ type: 'blob' });
+    })()`);
+    await waitFor(`!!document.querySelector('#rs-ok')`, '还原确认框');
+    await js(`document.querySelector('#rs-ok').click()`);
+    await waitFor(
+      `document.querySelector('#toast').textContent.includes('还原完成')`,
+      '还原完成',
+      40000
+    );
+
+    checkEq(await js(`typeof window.__pwned`), 'undefined', 'id 里的脚本没有被执行');
+    checkEq(
+      await js(`document.querySelectorAll('[onmouseover]').length`),
+      0,
+      '没有属性从 data-* 里逃出来'
+    );
+    checkEq(await js(`typeof window.__pwned2`), 'undefined', '分类图标里的脚本没有被执行');
+    checkEq(
+      await js(`document.querySelectorAll('img[src="x"]').length`),
+      0,
+      '图标是按文本渲染的，没有被当成标签'
+    );
+    checkEq(
+      await js(`[...document.querySelectorAll('#sidebar .course-label')].some(e => e.textContent === '正常人课程')`),
+      true,
+      '课程本身照常还原，只是 id 换成了自己发的'
+    );
+    checkEq(
+      await js(`document.querySelectorAll('.sem-del').length`),
+      1,
+      '结构完整，没有因为脏 id 而渲染崩掉'
+    );
+
+    // ============ 16. 无未捕获异常 ============
+    console.log('\n[16] 异常检查');
     check(pageErrors.length === 0, '全程没有未捕获异常', pageErrors.join('\n        '));
 
   } finally {
