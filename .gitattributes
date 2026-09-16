@@ -1,0 +1,13 @@
+# 仓库里一律存 LF。Windows 上检出时 git 会按需要转换，
+# 免得同一个文件因为换行符在提交里反复出现「整篇改动」。
+* text=auto eol=lf
+
+# 这些是二进制，别碰
+*.png binary
+*.jpg binary
+*.ico binary
+*.bcmap binary
+
+# vendor/ 是上游原样收进来的第三方文件，不要做任何换行符转换，
+# 否则 diff 里看不出是不是真的换了版本
+vendor/** -text

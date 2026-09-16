@@ -1,0 +1,17 @@
+# 冒烟测试现场生成的假文件，不入库
+.fixtures/
+
+# 依赖：本项目没有构建步骤，vendor/ 是直接收进仓库的
+node_modules/
+package.json
+package-lock.json
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 日志
+*.log
