@@ -226,16 +226,8 @@ async function main() {
       r.onerror = () => rej(r.error);
     })`);
 
-    let n = 0;
-    for (let i = 0; i < 100; i++) {
-      n = await textCount();
-      if (n >= 6) break;
-      await sleep(300);
-    }
-    check(n >= 6, '六种格式的正文都提取入库（txt/docx/pptx/xlsx/pdf）', `已提取 ${n} 份`);
-
     // 提取状态记在 files 表上（texts 表只存正文），按文件看才有意义
-    const extractRows = await js(`new Promise((res, rej) => {
+    const readExtract = () => js(`new Promise((res, rej) => {
       const r = indexedDB.open('course-library-db');
       r.onsuccess = () => {
         const out = [];
@@ -249,7 +241,22 @@ async function main() {
       };
       r.onerror = () => rej(r.error);
     })`);
+
+    // 等到「没有 pending 了」为止，而不是等到某个数量就往下走。
+    // 后者在本地够快所以侥幸能过，线上就露馅了：PDF 那条路要先从网上拉
+    // 约 1.8MB 的 pdf.js，等凑够 6 份时另外两份还在 pending，紧接着的断言必然挂。
+    // 上限给到 90 秒——线上第一次跑要把 pdf.js 下下来。
+    let extractRows = [];
+    for (let i = 0; i < 300; i++) {
+      extractRows = await readExtract();
+      if (extractRows.length >= 8 && !extractRows.some((r) => r.status === 'pending')) break;
+      await sleep(300);
+    }
     console.log('        提取状态：' + extractRows.map((r) => `${r.name}=${r.status}(${r.len}字)`).join(', '));
+
+    const n = await textCount();
+    check(n >= 6, '六种格式的正文都提取入库（txt/docx/pptx/xlsx/pdf）', `已提取 ${n} 份`);
+
     check(
       extractRows.length >= 8 && extractRows.every((r) => r.status === 'done'),
       '八个文件全部提取成功，无一失败',
