@@ -486,12 +486,25 @@ async function main() {
     // ============ 11. 删除学期 ============
     // 建错一个学期（打错字、重复建）过去是删不掉的，只能一直挂在那儿。
     // 但学期下面挂着课程、课程下面挂着文件，所以「能删」和「不能悄悄删干净」
-    // 得同时成立：数字要写清楚，删完不能留下孤儿记录。
+    // 得同时成立：确认框要把「这个学期下的文件全没」说透，删完不能留下孤儿记录。
+    // 空学期和有文件的学期分开测——两种情况该说的话不一样。
     console.log('\n[11] 删除学期');
 
     const semCountOf = (name) => js(`
       [...document.querySelectorAll('#sidebar .sem-block')]
         .filter(b => b.querySelector('.sem-label')?.textContent === ${JSON.stringify(name)}).length`);
+
+    // 直接问 IndexedDB。界面渲染对不对是一回事，库里有没有留下
+    // 永远读不到、却照样占着配额的孤儿 blob 是另一回事。
+    const idbCount = (store) => js(`new Promise((res, rej) => {
+      const r = indexedDB.open('course-library-db');
+      r.onsuccess = () => {
+        const q = r.result.transaction(${JSON.stringify(store)},'readonly').objectStore(${JSON.stringify(store)}).count();
+        q.onsuccess = () => res(q.result);
+        q.onerror = () => rej(q.error);
+      };
+      r.onerror = () => rej(r.error);
+    })`);
 
     // 先建一个专门用来删的学期，并在里面建一门课
     await js(`document.querySelector('#side-new-sem').click()`);
@@ -512,20 +525,58 @@ async function main() {
     await waitFor(`!document.querySelector('#c-name')`, '临时课程创建完成');
     checkEq(await semCountOf('2030 春（待删）'), 1, '临时学期已建好');
 
+    const openDelSem = async () => {
+      await js(`(() => {
+        const b = [...document.querySelectorAll('#sidebar .sem-block')]
+          .find(x => x.querySelector('.sem-label')?.textContent === '2030 春（待删）');
+        b.querySelector('.sem-del').click();
+      })()`);
+      await waitFor(`!!document.querySelector('#sd-ok')`, '删除学期确认框');
+      return js(`document.querySelector('.modal-body').textContent`);
+    };
+
+    // —— 先看空学期。这时候不该吓唬人：一个文件都没有却说「文件都会被删」，
+    // 用户会以为自己弄丢了什么，反而学会忽略这个提示。 ——
+    const warnEmpty = await openDelSem();
+    check(
+      warnEmpty.includes('还没有文件') && warnEmpty.includes('不可撤销'),
+      '空学期的确认框不虚报要删文件',
+      `实际文案：「${warnEmpty.replace(/\s+/g, ' ').trim()}」`
+    );
+    await js(`document.querySelector('#sd-cancel').click()`);
+    await waitFor(`!document.querySelector('#sd-ok')`, '取消后确认框关掉');
+
+    // —— 再往这个学期里挪一个文件进去，测「有文件」的那套说法 ——
+    // 借现成的「移动」功能搬，不额外造 fixture：fixture 目录一变，
+    // 前面几节按整目录导入的计数全都要跟着改。挑「新建文件夹(3).docx」，
+    // 它是手动指定过归属的，不属于任何版本组，搬走不影响别处的断言。
+    await rowsInMath();
+    const moveTarget = await js(`(() => {
+      const row = [...document.querySelectorAll('.file-row')]
+        .find(r => r.querySelector('.file-name').textContent.trim().startsWith('新建文件夹(3).docx'));
+      return row ? { id: row.dataset.id, name: row.querySelector('.file-name').textContent.trim() } : null;
+    })()`);
+    check(!!moveTarget, '找到了要搬去临时学期的文件', JSON.stringify(moveTarget));
+
+    await js(`document.querySelector('.file-row[data-id="${moveTarget.id}"] [data-move]').click()`);
+    await waitFor(`!!document.querySelector('#mv-ok')`, '移动弹窗');
+    await js(`(() => {
+      const sel = document.querySelector('#mv-course');
+      sel.value = [...sel.options].find(o => o.textContent === '临时课程').value;
+      sel.onchange();
+      document.querySelector('#mv-ok').click();
+    })()`);
+    await waitFor(`document.querySelector('#toast').textContent.includes('已移动')`, '文件已挪进临时课程');
+
     // 数「高等数学」下面的文件——固定看一门课，避免视图自己跑偏导致前后不可比
     const mathFilesBeforeDel = await rowsInMath();
+    const blobsBeforeDel = await idbCount('blobs');
 
-    // 删它
-    await js(`(() => {
-      const b = [...document.querySelectorAll('#sidebar .sem-block')]
-        .find(x => x.querySelector('.sem-label')?.textContent === '2030 春（待删）');
-      b.querySelector('.sem-del').click();
-    })()`);
-    await waitFor(`!!document.querySelector('#sd-ok')`, '删除学期确认框');
-    const delWarn = await js(`document.querySelector('.modal-body').textContent`);
+    // —— 有文件的学期：这句话必须说透 ——
+    const delWarn = await openDelSem();
     check(
-      delWarn.includes('1') && delWarn.includes('不可撤销'),
-      '确认框里写明了要连带删掉多少',
+      delWarn.includes('所有文件') && delWarn.includes('共 1 个') && delWarn.includes('不可撤销'),
+      '确认框写明该学期下的所有文件都会被删，并给出数量',
       `实际文案：「${delWarn.replace(/\s+/g, ' ').trim()}」`
     );
 
@@ -540,12 +591,16 @@ async function main() {
       0,
       '学期下的课程一并删掉，没留孤儿'
     );
-    // 别把原库里的东西误伤：原来的三门课和文件都得还在
+    // 别把原库里的东西误伤：原来的课和文件都得还在
     check(
-      (await js(`document.querySelectorAll('#sidebar .course-label').length`)) >= 3,
+      (await js(`document.querySelectorAll('#sidebar .course-label').length`)) >= 2,
       '原有课程没被误删'
     );
     checkEq(await rowsInMath(), mathFilesBeforeDel, '原有文件没被误删');
+
+    // 被删掉的那个文件，本体也要跟着走。只清 files 表的话，界面上它没了，
+    // 但 blob 还压在库里占着配额，而且这辈子再也读不到——这种残留最难发现。
+    checkEq(await idbCount('blobs'), blobsBeforeDel - 1, '文件本体一并删掉，没留下占配额的孤儿');
 
     // ============ 12. 重复文件的提示 ============
     // 同一份文件导两次，过去只会静悄悄多出一条记录，要用户自己发现。

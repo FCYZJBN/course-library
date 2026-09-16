@@ -1512,9 +1512,10 @@ function openSemesterDialog() {
   input.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
 }
 
-// 删除学期。它下面挂着课程，课程下面挂着文件——点一下可能删掉几百个文件，
-// 所以确认框里必须把数量写明白，用户才判断得出来是不是点错了。
-// 另外给一条退路：想把课程挪到别的学期，改课程的「所属学期」就行，不用删。
+// 删除学期。它下面挂着课程，课程下面挂着文件——点一下可能删掉几百个文件。
+// 确认框只说一件事，但这件事必须说透：**这个学期下的所有文件都会没**。
+// 用户点这个按钮时脑子里想的多半是「把学期这个空壳删掉」，不是「删文件」，
+// 所以不能只写「删除学期？」——那等于没提醒。数量跟在后面，用来判断是不是点错了。
 function openDeleteSemester(semId) {
   const sem = state.semesters.find((s) => s.id === semId);
   if (!sem) return;
@@ -1525,7 +1526,13 @@ function openDeleteSemester(semId) {
   const m = openModal({
     title: '删除学期',
     body: `<p style="line-height:1.8;margin:0">
-      将删除学期「${escapeHtml(sem.name)}」${courseIds.size ? `，以及它下面的 <b>${courseIds.size}</b> 门课程和 <b>${files.length}</b> 个文件` : ''}，<b style="color:var(--danger)">不可撤销</b>。</p>
+      ${
+        files.length
+          ? `学期「${escapeHtml(sem.name)}」下的<b>所有文件</b>都会被删除（共 <b>${files.length}</b> 个${
+              courseIds.size > 1 ? `，分属 ${courseIds.size} 门课程` : ''
+            }），`
+          : `学期「${escapeHtml(sem.name)}」下还没有文件，删除它不会动到任何资料，`
+      }<b style="color:var(--danger)">不可撤销</b>。</p>
       ${courseIds.size ? `<p class="card-desc" style="margin:12px 0 0;font-size:13px">
         如果只是想把课程挪到别的学期，不用删：在课程里改「所属学期」即可。</p>` : ''}`,
     foot: `<span class="spacer"></span>
