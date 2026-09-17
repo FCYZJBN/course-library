@@ -10,6 +10,7 @@ import * as db from './db.js';
 import { classifyBatch, classifyOne, recomputeVersions } from './classifier.js';
 import { extractText, isExtractable } from './extractor.js';
 import { exportCourses, exportBackup, importBackup, downloadBlob } from './exporter.js';
+import { buildExportPlan, writeExportPlan, inspectTargetFolder } from './folder-export.js';
 import { searchTexts } from './search.js';
 import { DEFAULT_CATEGORIES, suggestAliases } from './seed.js';
 
@@ -1230,6 +1231,97 @@ async function fillStorageCard() {
   btn.hidden = persisted;
 }
 
+// 「导出到文件夹」按钮只在浏览器真的支持时才露出来。
+// 不支持就直接说清楚替代方案——藏起来不解释，用户只会以为功能坏了。
+function fillFolderExportCard() {
+  const btn = $('#set-export-folder');
+  const hint = $('#folder-hint');
+  if (!btn || !hint) return;
+
+  if (typeof window.showDirectoryPicker === 'function') {
+    btn.hidden = false;
+    hint.textContent = '需要 Chrome 或 Edge 桌面版。';
+    return;
+  }
+  btn.hidden = true;
+  hint.innerHTML = '这个浏览器不给网页写文件夹的权限（Firefox、Safari 和手机浏览器都不给），'
+    + '所以这一项用不了。想要一棵能直接翻的文件夹树，用上面的「导出全部资料」下载 zip，解压出来是一样的结构。';
+}
+
+// 导出完给一份「有什么地方和库里不一样」的清单。
+// 静默改名、静默跳过、静默截短都不行：文件在文件夹里叫什么，用户是照着自己
+// 记着的名字去找的，改了不说等于丢文件。
+function openFolderExportReport(report, mode) {
+  const { written, bytes, total, missing, failed, failures, leftovers, notes, counts } = report;
+
+  const parts = [];
+  parts.push(`<p style="line-height:1.8;margin:0 0 14px">
+    ${total
+      ? `写入了 <b>${written}</b> 个文件，共 <b>${formatBytes(bytes)}</b>。`
+      : '资料库里还没有文件，只建好了学期和课程的目录框架。'}<br>
+    <span style="color:var(--muted);font-size:13px">
+      ${counts.semesters} 个学期 · ${counts.courses} 门课程${mode === 'overwrite' ? ' · 叠在上次那次导出上' : ''}
+    </span>
+  </p>`);
+
+  const renamed = notes.filter((n) => n.kind === 'renamed');
+  const truncated = notes.filter((n) => n.kind === 'truncated');
+
+  const block = (title, tone, items, render) => {
+    if (!items.length) return;
+    const shown = items.slice(0, 5).map(render).join('');
+    const rest = items.length > 5 ? `<div>…另有 ${items.length - 5} 个</div>` : '';
+    parts.push(`<div style="margin:0 0 14px">
+      <div style="color:${tone};margin-bottom:6px"><b>${title}</b></div>
+      <div style="font-size:13px;line-height:1.7;word-break:break-all;color:var(--muted)">${shown}${rest}</div>
+    </div>`);
+  };
+
+  const changed = renamed.filter((n) => n.what !== '文件名');
+  block('有目录名重命名了（含 Windows 不允许的字符）', 'var(--warn)', changed,
+    (n) => `${escapeHtml(n.from)} → ${escapeHtml(n.to)}<br>`);
+  block('有文件名重命名了（含 Windows 不允许的字符）', 'var(--warn)',
+    renamed.filter((n) => n.what === '文件名'),
+    (n) => `${escapeHtml(n.from)} → ${escapeHtml(n.to)}<br>`);
+  block('有名字太长，被截短了', 'var(--warn)', truncated,
+    (n) => `${escapeHtml(n.from)}<br>→ ${escapeHtml(n.to)}<br>`);
+  block('有文件没能写出去', 'var(--danger)', failures,
+    (f) => `${escapeHtml(f.path)} — ${escapeHtml(f.message)}<br>`);
+
+  if (missing) {
+    parts.push(`<p style="line-height:1.8;margin:0 0 14px;color:var(--danger)">
+      <b>有 ${missing} 个文件的本体在库里找不到了</b>，没能写出去。
+      <span style="color:var(--muted)">多半是导入中断留下的空壳，导出备份也补不回来——
+      它们本来就只是记录，没有内容。</span></p>`);
+  }
+
+  if (leftovers.length) {
+    const shown = leftovers.slice(0, 5).map((p) => escapeHtml(p)).join('<br>');
+    const rest = leftovers.length > 5 ? `<br>…另有 ${leftovers.length - 5} 个` : '';
+    parts.push(`<p style="line-height:1.8;margin:0 0 8px">
+      <b>那个文件夹里还留着 ${leftovers.length} 个上次导出的文件</b>，
+      这次的资料库里已经没有它们了。<br>
+      <span style="color:var(--muted)">导出没有删除权，所以一个都没动——确认不要了请你自己删。</span></p>
+      <div style="font-size:13px;line-height:1.7;word-break:break-all;color:var(--muted);margin-bottom:14px">${shown}${rest}</div>`);
+  }
+
+  if (total && !renamed.length && !truncated.length && !failed && !missing) {
+    parts.push(`<p style="line-height:1.8;margin:0;color:var(--muted)">
+      文件名和目录结构都按库里的样子原样写出，没有改动的地方。</p>`);
+  }
+  if (mode === 'overwrite' && !leftovers.length) {
+    parts.push(`<p style="line-height:1.8;margin:0;color:var(--muted)">上次那批文件这次全都重新写了一遍。</p>`);
+  }
+
+  const m = openModal({
+    title: '导出完成',
+    body: parts.join(''),
+    foot: '<span class="spacer"></span><button class="primary-btn" id="fx-report-ok">知道了</button>',
+    wide: true,
+  });
+  m.foot.querySelector('#fx-report-ok').onclick = () => m.close();
+}
+
 async function renderSettings(main) {
   const data = await currentData();
   const totalSize = data.files.reduce((s, f) => s + (f.size || 0), 0);
@@ -1274,6 +1366,20 @@ async function renderSettings(main) {
       </div>
     </div>
 
+    <div class="card">
+      <h3 class="card-title">导出到文件夹</h3>
+      <p class="card-desc">
+        把资料库按「学期 / 课程 / 分类」写进你挑的一个文件夹，文件名原样保留，
+        用资源管理器就能直接翻，也能用别的软件打开里面的文件。<br>
+        这是一次性的搬运：导出完之后你在网站里再改什么，那个文件夹不会跟着变。
+        想跟上，就再导出一次。
+      </p>
+      <div class="card-actions">
+        <button class="ghost-btn" id="set-export-folder" hidden>导出到文件夹…</button>
+      </div>
+      <p class="card-desc" id="folder-hint" style="font-size:12.5px;margin:10px 0 0"></p>
+    </div>
+
     <div class="card" id="storage-card">
       <h3 class="card-title">存储空间</h3>
       <p class="card-desc" id="storage-desc">正在读取…</p>
@@ -1306,6 +1412,7 @@ async function renderSettings(main) {
   // 用户看到「才 400MB」就放心继续导，然后突然写不进去了。
   // 这里不 await，让设置页先画出来，数字随后填。
   fillStorageCard();
+  fillFolderExportCard();
 
   main.querySelector('#storage-persist').onclick = async (e) => {
     const btn = e.currentTarget;
@@ -1351,6 +1458,56 @@ async function renderSettings(main) {
   };
 
   main.querySelector('#set-restore').onclick = () => $('#backup-input').click();
+
+  main.querySelector('#set-export-folder').onclick = async () => {
+    // showDirectoryPicker 必须由用户手势直接触发，前面不能 await 任何东西，
+    // 否则手势就失效了——所以选文件夹是这里第一步，读库和写盘都在它后面。
+    let dir;
+    try {
+      dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } catch (err) {
+      // 用户自己按了取消，不算错误，什么都不用说
+      if (err?.name !== 'AbortError') toast('打不开那个文件夹：' + (err?.message || err));
+      return;
+    }
+
+    let target;
+    try {
+      target = await inspectTargetFolder(dir);
+    } catch (err) {
+      toast('读不了那个文件夹：' + (err?.message || err));
+      return;
+    }
+    if (target.mode === 'blocked') {
+      const m = openModal({
+        title: '这个文件夹里已经有别的东西了',
+        body: `<p style="line-height:1.8;margin:0">
+          为了不弄乱你原有的文件，导出只会写进一个<b>空文件夹</b>，
+          或者上次由本应用导出的文件夹。<br>
+          这个文件夹两样都不是，所以停在这里了。<br>
+          <span style="color:var(--muted)">换个空的，或者在它里面新建一个再来。</span></p>`,
+        foot: '<span class="spacer"></span><button class="primary-btn" id="fx-blocked-ok">知道了</button>',
+      });
+      m.foot.querySelector('#fx-blocked-ok').onclick = () => m.close();
+      return;
+    }
+
+    const progress = openProgress('正在读取资料库…');
+    try {
+      const data = await currentData();
+      const plan = buildExportPlan(data);
+      const report = await writeExportPlan(dir, plan, {
+        getBlob: (id) => db.get('blobs', id),
+        existing: target.existing,
+        onProgress: (msg) => progress.set(msg),
+      });
+      progress.close();
+      openFolderExportReport(report, target.mode);
+    } catch (err) {
+      progress.close();
+      toast('导出失败：' + (err?.message || err));
+    }
+  };
 
   main.querySelector('#set-wipe').onclick = () => {
     const m = openModal({

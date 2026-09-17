@@ -26,8 +26,11 @@ async function addFilesToZip(zip, fileRecords, ctx) {
     const courseName = course?.name || '未归类';
     const cat = ctx.categories.get(f.categoryId) || '其他';
 
-    let path = `${sem}/${courseName}/${cat}/${f.name}`;
-    path = path.replace(/[\\:*?"<>|]/g, '_'); // Windows 不允许的字符
+    // 逐段净化，不能对整条路径做替换——`/` 在名字里得换掉（一个叫「第3章/习题.docx」
+    // 的文件会凭空多出一层目录，还原时结构就对不上了），但它是这里的路径分隔符，
+    // 整条替换会把好不容易拼出来的目录结构一起抹平。
+    const seg = (s) => String(s ?? '').replace(/[\\/:*?"<>|]/g, '_'); // Windows 不允许的字符
+    const path = [sem, courseName, cat, f.name].map(seg).join('/');
 
     // 同名文件加序号，避免互相覆盖
     let finalPath = path;

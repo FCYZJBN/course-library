@@ -8,7 +8,7 @@
 // 只有真的导入 PDF 时才用得上，预缓存会让第一次打开白白多下 2MB。
 // 它们会在第一次被用到时经下面的 fetch 逻辑自动落进缓存。
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `course-library-${VERSION}`;
 
 const PRECACHE = [
@@ -23,6 +23,7 @@ const PRECACHE = [
   './js/classifier.js',
   './js/extractor.js',
   './js/exporter.js',
+  './js/folder-export.js',
   './js/search.js',
   './vendor/jszip.min.js',
   './icons/icon-192.png',
