@@ -1,4 +1,4 @@
-// 本地静态服务器：node scripts/serve.js [端口]
+// 本地静态服务器：node tools/serve.js [端口]
 //
 // 只是为了让浏览器能以 http:// 打开这个 PWA——file:// 下 Service Worker 和
 // ES Module 都会被浏览器拦掉。生产环境用的是 GitHub Pages，不需要它。

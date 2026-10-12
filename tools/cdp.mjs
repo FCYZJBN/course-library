@@ -30,7 +30,7 @@ export function findChrome() {
 
 /** 起本地静态服务器 */
 export function startServer(port) {
-  return spawn(process.execPath, [join(ROOT, 'scripts', 'serve.js'), String(port)], { stdio: 'ignore' });
+  return spawn(process.execPath, [join(ROOT, 'tools', 'serve.js'), String(port)], { stdio: 'ignore' });
 }
 
 /** 起无头 Chrome，返回进程句柄和临时用户目录 */

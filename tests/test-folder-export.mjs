@@ -1,4 +1,4 @@
-// 导出到文件夹的路径规划单元测试：node scripts/test-folder-export.mjs
+// 导出到文件夹的路径规划单元测试：node tests/test-folder-export.mjs
 //
 // 磁盘那半截（showDirectoryPicker / createWritable）在 Node 里跑不了，
 // 但真正会出错的本来就是路径规则这一片：非法字符、保留名、超长截断、同名加序号。
@@ -6,7 +6,7 @@
 
 import {
   buildExportPlan, LIB_META, SEM_META, COURSE_META, UNFILED_DIR, UNASSIGNED_SEM,
-} from '../js/folder-export.js';
+} from '../src/folder-export.js';
 
 let pass = 0;
 let fail = 0;

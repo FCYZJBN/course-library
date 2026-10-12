@@ -1,15 +1,15 @@
-// 端到端冒烟测试：node scripts/smoke.mjs
+// 端到端冒烟测试：node tests/smoke.mjs
 //
 // 起一个本地服务器 + 无头 Chrome，用 CDP 驱动真实浏览器走完整个核心链路：
 // 建学期 → 建课程 → 导入文件 → 确认归类 → 落库 → 后台提取正文 → 内容搜索 → 导出。
 // 全程收集 Runtime.exceptionThrown，任何未捕获异常都算失败。
 //
-// 依赖 .fixtures/ 里的假文件，先跑 node scripts/make-fixtures.mjs 生成。
+// 依赖 .fixtures/ 里的假文件，先跑 node tools/make-fixtures.mjs 生成。
 
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { Cdp, ROOT, sleep, startServer, startChrome } from './cdp.mjs';
+import { Cdp, ROOT, sleep, startServer, startChrome } from '../tools/cdp.mjs';
 
 const PORT = 8010;
 const DEBUG_PORT = 9411;
@@ -47,7 +47,7 @@ function checkEq(actual, expected, label) {
 async function main() {
   const fixturesDir = join(ROOT, '.fixtures');
   if (!existsSync(fixturesDir)) {
-    console.error('缺少 .fixtures/，先跑：node scripts/make-fixtures.mjs');
+    console.error('缺少 .fixtures/，先跑：node tools/make-fixtures.mjs');
     process.exit(1);
   }
   const fixtures = readdirSync(fixturesDir).map((n) => join(fixturesDir, n));
@@ -334,7 +334,7 @@ async function main() {
     // 而且写出来的东西能用同一套 API 读回来逐条核对。
     //
     // 这里核对的是「磁盘上的树」和「库里的数据」对不对得上，不是把路径规则再算一遍——
-    // 路径规则已经用纯函数在 scripts/test-folder-export.mjs 里钉死了，
+    // 路径规则已经用纯函数在 tests/test-folder-export.mjs 里钉死了，
     // 在这儿重算一遍等于把同一个 bug 抄两次。
     console.log('\n[9] 导出到文件夹');
 

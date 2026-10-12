@@ -225,7 +225,7 @@
 ```bash
 git clone https://github.com/FCYZJBN/course-library.git
 cd course-library
-node scripts/serve.js          # 然后打开 http://localhost:8000/
+node tools/serve.js            # 然后打开 http://localhost:8000/
 ```
 
 > 必须走 http，不能直接双击 `index.html`。`file://` 协议下浏览器的 Service Worker
@@ -234,10 +234,10 @@ node scripts/serve.js          # 然后打开 http://localhost:8000/
 ### 测试
 
 ```bash
-node scripts/test-classifier.mjs    # 分类引擎单元测试
-node scripts/test-folder-export.mjs # 导出到文件夹的路径规划单元测试
-node scripts/make-fixtures.mjs      # 生成冒烟测试用的假文件
-node scripts/smoke.mjs              # 端到端冒烟测试（无头 Chrome 跑完整链路）
+node tests/test-classifier.mjs    # 分类引擎单元测试
+node tests/test-folder-export.mjs # 导出到文件夹的路径规划单元测试
+node tools/make-fixtures.mjs      # 生成冒烟测试用的假文件
+node tests/smoke.mjs              # 端到端冒烟测试（无头 Chrome 跑完整链路）
 ```
 
 `smoke.mjs` 会自己起服务器和无头 Chrome，用 CDP 驱动真实浏览器走完
@@ -259,13 +259,13 @@ node scripts/smoke.mjs              # 端到端冒烟测试（无头 Chrome 跑�
 而不是「文件能下载」：
 
 ```bash
-BASE_URL=https://fcyzjbn.github.io/course-library/ node scripts/smoke.mjs
+BASE_URL=https://fcyzjbn.github.io/course-library/ node tests/smoke.mjs
 ```
 
 ### 重新生成图标
 
 ```bash
-node scripts/make-icons.mjs        # 手写 PNG 编码 + 4 倍超采样，不依赖任何图形库
+node tools/make-icons.mjs          # 手写 PNG 编码 + 4 倍超采样，不依赖任何图形库
 ```
 
 ### 目录结构

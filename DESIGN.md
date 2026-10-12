@@ -178,8 +178,8 @@ course-library/
 ├── index.html          入口页
 ├── manifest.json       PWA 清单
 ├── sw.js               Service Worker（离线缓存）
-├── css/style.css       样式
-├── js/
+├── src/                ── 源码：人写的实现 ──
+│   ├── style.css       样式
 │   ├── app.js          主逻辑（视图/导入/预览/课程/检索/设置）
 │   ├── db.js           IndexedDB 封装（七张表 + 游标扫描）
 │   ├── classifier.js   分类引擎（课程/分类/版本）
@@ -189,20 +189,23 @@ course-library/
 │   ├── exporter.js     导出/恢复（zip）
 │   ├── folder-export.js 导出到文件夹（路径规划 + 落盘）
 │   └── util.js         工具（文件名解析、格式化）
-├── vendor/
+├── vendor/             第三方原样收进来，不是本项目源码（.gitattributes 里锚定）
 │   ├── jszip.min.js            本地打包/解包库（导出 + OOXML 提取共用）
 │   ├── pdf.min.mjs             pdf.js 主库（懒加载，仅提取 PDF 时使用）
 │   ├── pdf.worker.min.mjs      pdf.js 的 worker
 │   └── cmaps/                  中文 PDF 的 CID 字体映射表（169 份，约 1.5MB）
-├── icons/              App 图标（由 scripts/make-icons.mjs 生成）
+├── icons/              App 图标（由 tools/make-icons.mjs 生成）
 ├── docs/screenshots/   README 用的截图
-├── scripts/
-│   ├── serve.js        本地静态服务器
+├── tests/              ── 只放测试 ──
 │   ├── smoke.mjs       端到端冒烟测试（CDP 驱动无头 Chrome）
 │   ├── test-classifier.mjs  分类引擎单元测试
-│   ├── test-folder-export.mjs  导出路径规划单元测试
+│   └── test-folder-export.mjs  导出路径规划单元测试
+├── tools/              ── 工具与共用基础设施 ──
+│   ├── serve.js        本地静态服务器
+│   ├── cdp.mjs         无依赖 CDP 客户端（冒烟与截图共用）
 │   ├── make-fixtures.mjs    生成冒烟测试用的假文件
-│   └── make-icons.mjs       生成 PWA 图标
+│   ├── make-icons.mjs       生成 PWA 图标
+│   └── screenshot.mjs       生成 README 截图
 ├── DESIGN.md           本文件
 ├── README.md           使用说明（含导入引导）
 └── LICENSE             MIT
@@ -265,7 +268,7 @@ course-library/
 
 ### 冒烟测试抓出来的 bug
 
-这些都不是语法错误，静态检查全绿，是 `scripts/smoke.mjs` 在真实浏览器里跑完整链路才暴露的：
+这些都不是语法错误，静态检查全绿，是 `tests/smoke.mjs` 在真实浏览器里跑完整链路才暴露的：
 
 1. **版本标记从来没生效过**（最严重）。`commitImport` 里先调 `refreshVersions` 再 `loadAll`，
    而 `refreshVersions` 是在 `state.files` 上分组的——那一刻新导入的文件还没进 `state.files`，
@@ -287,8 +290,8 @@ course-library/
 
 ### 验证情况
 
-- `node scripts/test-classifier.mjs` —— 分类引擎单元测试，**26 通过 / 0 失败**
-- `node scripts/smoke.mjs` —— 无头 Chrome 跑完整链路，**57 通过 / 0 失败**，全程零未捕获异常
+- `node tests/test-classifier.mjs` —— 分类引擎单元测试，**26 通过 / 0 失败**
+- `node tests/smoke.mjs` —— 无头 Chrome 跑完整链路，**57 通过 / 0 失败**，全程零未捕获异常
 
 > 这两个数字是 2026-09-16 首次跑通时的快照。当前是 26 和 84，见文末第十节。
 
@@ -319,7 +322,7 @@ course-library/
 9. **`putTx` 的「要么全有要么全无」是纸面上的**。往事务里写的那一排 `store.put` 中间若有同步抛出
    （如 `DataCloneError`），异常会直接穿过调用者，而事务还活着、会在空闲时自动提交——
    前面几条写进去了、后面几条没有，调用方以为整批失败，库里其实改了一半。
-   改成显式 `tx.abort()`（`js/db.js` 的 `runInTx`），删除路径同理：删一半比不删更糟。
+   改成显式 `tx.abort()`（`src/db.js` 的 `runInTx`），删除路径同理：删一半比不删更糟。
 
 **顺手补上的缺口：**
 
@@ -381,11 +384,11 @@ course-library/
 > 差别只在网速——那种「因为机器快所以过」的断言，本地跑一万次也发现不了。
 > 这个项目里两次都是这么抓出来的（第一次是 Service Worker 压根没注册上）。
 
-同一套断言也能直接打线上站点（`BASE_URL=https://fcyzjbn.github.io/course-library/ node scripts/smoke.mjs`），
+同一套断言也能直接打线上站点（`BASE_URL=https://fcyzjbn.github.io/course-library/ node tests/smoke.mjs`），
 部署后实测 **30 通过 / 0 失败**。确认线上可用的方式是「跑一遍真实链路」，
 而不是「curl 一下 index.html 返回 200」——后者只能说明文件传上去了。
 
-测试用的 8 个假文件由 `scripts/make-fixtures.mjs` 现场生成，**是真实格式**：
+测试用的 8 个假文件由 `tools/make-fixtures.mjs` 现场生成，**是真实格式**：
 docx/pptx/xlsx 是手写 ZIP 打包的真实 OOXML（不引第三方库，Node 自带能力足够），
 PDF 也是按 xref 表算好偏移量拼出来的合法文件。
 其中 pptx 故意让 `presentation.xml` 里声明的页序与文件名顺序**相反**，
@@ -473,7 +476,7 @@ PDF 也是按 xref 表算好偏移量拼出来的合法文件。
 
 - `buildExportPlan(data)` 做成**纯函数**，只吃数据、只吐清单。
   非法字符、保留名、超长截断、同名加序号、`待整理` 摊平——所有会出错的规则都挤在这半边，
-  用 `scripts/test-folder-export.mjs` 在 Node 里直接钉死（**50 条**）。
+  用 `tests/test-folder-export.mjs` 在 Node 里直接钉死（**50 条**）。
 - `writeExportPlan(root, plan, …)` 只负责照着清单往句柄里写。
 - 冒烟测试里把 `window.showDirectoryPicker` 换成一个返回 **OPFS** 目录的函数。
   OPFS（`navigator.storage.getDirectory()`）交出来的是货真价实的 `FileSystemDirectoryHandle`，
@@ -484,7 +487,7 @@ PDF 也是按 xref 表算好偏移量拼出来的合法文件。
 
 顺手修掉一个既有 bug：`exporter.js` 的 zip 导出是拿整条路径去做非法字符替换的，
 而 `/` 是那里的路径分隔符。一个叫「第3章/习题.docx」的文件会在 zip 里凭空多出一层目录，
-还原时结构就对不上。现在改成逐段净化（`js/folder-export.js` 里的斜杠处理是同一个道理）。
+还原时结构就对不上。现在改成逐段净化（`src/folder-export.js` 里的斜杠处理是同一个道理）。
 
 ### 这一级明确没有的东西
 

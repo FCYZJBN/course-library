@@ -1,4 +1,4 @@
-// 生成 PWA 图标：node scripts/make-icons.mjs
+// 生成 PWA 图标：node tools/make-icons.mjs
 //
 // 不引入任何图形库——手写 PNG 编码（Node 自带 zlib），图案用 4 倍超采样再降采样，
 // 这样圆角和斜边不会有锯齿。改图案只要改下面的 draw()。

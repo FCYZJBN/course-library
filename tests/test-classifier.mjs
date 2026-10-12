@@ -1,8 +1,8 @@
-// 分类引擎单元测试：node scripts/test-classifier.mjs
+// 分类引擎单元测试：node tests/test-classifier.mjs
 // 分类准确率是这个产品的命根子，规则改动必须跑一遍这个。
 
-import { guessCourse, guessCategory, parseVersion, recomputeVersions } from '../js/classifier.js';
-import { DEFAULT_CATEGORIES, suggestAliases } from '../js/seed.js';
+import { guessCourse, guessCategory, parseVersion, recomputeVersions } from '../src/classifier.js';
+import { DEFAULT_CATEGORIES, suggestAliases } from '../src/seed.js';
 
 let pass = 0;
 let fail = 0;

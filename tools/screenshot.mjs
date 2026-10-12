@@ -1,4 +1,4 @@
-// 生成 README 用的截图：node scripts/make-fixtures.mjs && node scripts/screenshot.mjs
+// 生成 README 用的截图：node tools/make-fixtures.mjs && node tools/screenshot.mjs
 //
 // 不手动画界面——用和冒烟测试同一套 CDP 手段，真的把应用跑起来、真的导入文件，
 // 再截当前画面。好处是截图永远和真实界面一致，改了样式重跑一次就行。

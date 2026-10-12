@@ -1,4 +1,4 @@
-// 生成冒烟测试用的假文件：node scripts/make-fixtures.mjs
+// 生成冒烟测试用的假文件：node tools/make-fixtures.mjs
 //
 // docx / pptx / xlsx 都是 ZIP 包，这里手写一个最小 ZIP 写入器（只用 STORE 不压缩，
 // 免去引入 zlib 之外的依赖），好让提取引擎在真实文件格式上被验证，而不是拿假数据糊弄。
